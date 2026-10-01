@@ -1,0 +1,206 @@
+import json
+from pathlib import Path
+import numpy as np
+import torch
+import torch.nn as nn
+from scipy.stats import norm
+
+class NeuralPID(nn.Module):
+    def __init__(
+        self,
+        input_dim=4,
+        hidden_dim=128,
+        n_hidden_layers=4,
+        output_dim=4,
+        dropout=0.0,
+    ):
+        super().__init__()
+
+        layers = [nn.Linear(input_dim, hidden_dim), nn.GELU()]
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+
+        for _ in range(n_hidden_layers - 1):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(nn.GELU())
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+
+        self.trunk = nn.Sequential(*layers)
+
+        self.atom_head = nn.Linear(hidden_dim, output_dim)
+        self.null_mu_head = nn.Linear(hidden_dim, output_dim)
+        self.null_log_sigma_head = nn.Linear(hidden_dim, output_dim)
+
+        nn.init.constant_(self.atom_head.bias, 0.5)
+
+    def forward(self, x):
+        h = self.trunk(x)
+        atoms = torch.nn.functional.softplus(self.atom_head(h))
+        null_mu = torch.nn.functional.softplus(self.null_mu_head(h))
+        null_sigma = torch.nn.functional.softplus(self.null_log_sigma_head(h)) + 1e-12
+        return atoms, null_mu, null_sigma
+
+
+# ============================================================
+# 2. STANDARDISER CLASS
+# ============================================================
+
+class InputStandardiser:
+    def __init__(self):
+        self.mean = None
+        self.std = None
+
+    def load(self, path):
+        data = np.load(path)
+        self.mean = data["mean"].astype(np.float64)
+        self.std = data["std"].astype(np.float64)
+
+    def transform(self, X):
+        return (X - self.mean) / self.std
+
+
+# ============================================================
+# 3. PIPELINE WRAPPER FOR EXTERNAL USE
+# ============================================================
+
+class NeuralPIDInference:
+    def __init__(self, model_dir, device=None):
+        self.model_dir = Path(model_dir)
+        self.device = (
+            device
+            if device
+            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+
+        # Load Metadata
+        metadata_path = self.model_dir / "model_metadata.json"
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                self.metadata = json.load(f)
+        else:
+            self.metadata = {"input_dimension": 4, "output_dimension": 4}
+
+        # Load Standardiser
+        self.standardiser = InputStandardiser()
+        self.standardiser.load(self.model_dir / "input_standardiser.npz")
+
+        # Fix 3: Cast Model explicitly to float64
+        self.model = NeuralPID(
+            input_dim=self.metadata.get("input_dimension", 4),
+            hidden_dim=128,
+            n_hidden_layers=4,
+            output_dim=self.metadata.get("output_dimension", 4),
+        ).to(dtype=torch.float64, device=self.device)
+
+        weights_path = self.model_dir / "neural_pid_weights.pt"
+        if not weights_path.exists():
+            weights_path = self.model_dir / "neural_pid_best.pt"
+
+        checkpoint = torch.load(weights_path, map_location=self.device, weights_only=False)
+        state_dict = checkpoint["model_state"] if "model_state" in checkpoint else checkpoint
+        self.model.load_state_dict(state_dict)
+        self.model.eval()
+
+    def predict_from_features(self, features, p_value_thresh=0.05):
+        # Fix 4: Set default precision to float64
+        features = np.asarray(features, dtype=np.float64)
+        if features.ndim == 1:
+            features = features[None, :]
+
+        X_scaled = self.standardiser.transform(features)
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float64, device=self.device)
+
+        with torch.no_grad():
+            atoms, null_mu, null_sigma = self.model(X_tensor)
+
+        atoms = atoms.cpu().numpy()
+        null_mu = null_mu.cpu().numpy()
+        null_sigma = null_sigma.cpu().numpy()
+
+        z_scores = (atoms - null_mu) / (null_sigma + 1e-16)
+        p_values = 1.0 - norm.cdf(z_scores)
+        significant_atoms = np.where(p_values < p_value_thresh, atoms, 0.0)
+
+        return {
+            "atoms": atoms,
+            "null_mu": null_mu,
+            "null_sigma": null_sigma,
+            "p_values": p_values,
+            "significant_atoms": significant_atoms,
+        }
+
+    def predict_from_covariance(self, C, n_samples, p_value_thresh=0.05):
+        inv_sqrt_N = np.float64(1.0 / np.sqrt(n_samples))
+        features = np.array(
+            [C[0, 1], C[0, 2], C[1, 2], inv_sqrt_N],
+            dtype=np.float64
+        ).reshape(1, -1)
+
+        features_scaled = self.standardiser.transform(features)
+        x_tensor = torch.tensor(features_scaled, dtype=torch.float64, device=self.device)
+
+        self.model.eval()
+        with torch.no_grad():
+            atoms, null_mu, null_sigma = self.model(x_tensor)
+
+        atoms = atoms.cpu().numpy()
+        null_mu = null_mu.cpu().numpy()
+        null_sigma = null_sigma.cpu().numpy()
+
+        z_scores = (atoms - null_mu) / (null_sigma + 1e-16)
+        p_values = 1.0 - norm.cdf(z_scores)
+        significant_atoms = np.where(p_values < p_value_thresh, atoms, 0.0)
+
+        return {
+            "atoms": atoms[0],
+            "null_mu": null_mu[0],
+            "null_sigma": null_sigma[0],
+            "p_values": p_values[0],
+            "significant_atoms": significant_atoms[0],
+        }
+
+#Instantiate the model
+MODEL_DIR = r".../neural_pid_output"
+pid_estimator = NeuralPIDInference(model_dir=MODEL_DIR)
+
+
+import numpy as np
+from gcmi import copnorm
+
+# X = samples × channels matrix
+# Y = target variable
+
+x1 = np.squeeze(copnorm(X[:, 0][None, :]))
+x2 = np.squeeze(copnorm(X[:, 1][None, :]))
+t  = np.squeeze(copnorm(Y[None, :]))
+
+xyz = np.column_stack([x1, x2, t])
+
+Cxyz = (xyz.T @ xyz) / (xyz.shape[0] - 1)
+np.fill_diagonal(Cxyz, 1.0)
+
+result = pid_estimator.predict_from_covariance(
+    Cxyz,
+    n_samples=xyz.shape[0]
+)
+
+# PID atoms
+atoms = np.asarray(result["atoms"])
+
+#Estimated parameters for null distribution
+null_mu = np.asarray(result["null_mu"])
+null_sigma = np.asarray(result["null_sigma"])
+ 
+# z-scores
+z = (atoms - null_mu) / null_sigma
+ 
+# two-sided Gaussian p-values
+p = 2 * (1 - norm.cdf(np.abs(z)))
+p_value_thresh=0.95
+z_scores = (atoms - null_mu) / (null_sigma + 1e-16)
+p_values = 1.0 - norm.cdf(z_scores)
+significant_atoms = np.where(p_values < p_value_thresh, atoms, 0.0)
+ 
+print("Statistically significant atoms :", significant_atoms)
+print("P-values :", p_values)
