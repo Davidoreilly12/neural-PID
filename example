@@ -165,6 +165,8 @@ MODEL_DIR = r".../neural_pid_output"
 pid_estimator = NeuralPIDInference(model_dir=MODEL_DIR)
 
 
+#Now lets run it!
+
 import numpy as np
 from gcmi import copnorm
 
