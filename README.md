@@ -1,6 +1,6 @@
 # Neural PID
 
-Neural amortisation of Partial Information Decomposition (PID) for rapid estimation of redundancy, unique information, and synergy directly from the joint covariance matrix. 
+Neural amortisation of Partial Information Decomposition (PID) for rapid estimation of redundant, unique, and synergistic information directly from the joint covariance matrix. 
 
 ## Overview
 
