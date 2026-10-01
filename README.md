@@ -1,33 +1,111 @@
-# neural-PID
-Neural Amortisation of an approach to Partial Information Decomposition\
+# Neural PID
 
-Training results:\
+Neural amortisation of Partial Information Decomposition (PID) for rapid estimation of redundancy, unique information, and synergy directly from the joint covariance matrix. 
 
-======================================================================
-TEST PERFORMANCE - TRUE PID ATOMS ACCURACY
-======================================================================
-Redundancy           MAE=4.8107444742e-03 | RMSE=7.4894723892e-03
-Unique 1             MAE=5.0074758048e-03 | RMSE=8.4497798353e-03
-Unique 2             MAE=5.3807032092e-03 | RMSE=9.6276350265e-03
-Synergy              MAE=6.9487707359e-03 | RMSE=1.3152894183e-02
+## Overview
 
-======================================================================
-TEST PERFORMANCE - NULL STATISTICS (MU & SIGMA)
-======================================================================
-Redundancy           Mu MAE=2.9196019717e-03 | Sigma MAE=2.1728143322e-03
-Unique 1             Mu MAE=6.3710142436e-03 | Sigma MAE=2.9267353170e-03
-Unique 2             Mu MAE=7.5069443821e-03 | Sigma MAE=2.9668157049e-03
-Synergy              Mu MAE=2.8335172988e-03 | Sigma MAE=2.3027225014e-03
+This repository provides a neural estimator trained on simulated data of varying signal and noise correlations (r = -0.99 - 0.99) and sample sizes (N = 10 - 1000000) for PID that predicts:
 
+- Redundancy (R)
+- Unique Information 1 (UY)
+- Unique Information 2 (UZ)
+- Synergy (S)
 
+In addition to PID atoms, the model estimates the null distribution parameters for each atom:
 
+- Null mean (μ)
+- Null standard deviation (σ)
 
-Package dependencies: \
-https://github.com/robince/gcmi \
-scipy \
-numpy
+These parameters allow statistical significance testing without explicit permutation testing by approximating the null distribution as Gaussian:
 
-References \
-Ince RA. Measuring multivariate redundant information with pointwise common change in surprisal. Entropy. 2017 Jun 29;19(7):318. \
-Ince RA, Giordano BL, Kayser C, Rousselet GA, Gross J, Schyns PG. A statistical framework for neuroimaging data analysis based on mutual information estimated via a gaussian copula. Human brain mapping. 2017 Mar;38(3):1541-73.
+\[
+z = \frac{\text{atom} - \mu_{\text{null}}}{\sigma_{\text{null}}}
+\]
 
+\[
+p = 2\left(1-\Phi(|z|)\right)
+\]
+
+where \(\Phi\) denotes the cumulative distribution function of the standard normal distribution.
+
+---
+
+## Test Performance
+
+### PID Atom Prediction Accuracy
+
+| Atom | MAE | RMSE |
+|--------|--------|--------|
+| Redundancy | 4.81 × 10⁻³ | 7.49 × 10⁻³ |
+| Unique 1 | 5.01 × 10⁻³ | 8.45 × 10⁻³ |
+| Unique 2 | 5.38 × 10⁻³ | 9.63 × 10⁻³ |
+| Synergy | 6.95 × 10⁻³ | 1.32 × 10⁻² |
+
+### Null Distribution Estimation Accuracy
+
+| Atom | μ MAE | σ MAE |
+|--------|--------|--------|
+| Redundancy | 2.92 × 10⁻³ | 2.17 × 10⁻³ |
+| Unique 1 | 6.37 × 10⁻³ | 2.93 × 10⁻³ |
+| Unique 2 | 7.51 × 10⁻³ | 2.97 × 10⁻³ |
+| Synergy | 2.83 × 10⁻³ | 2.30 × 10⁻³ |
+
+---
+
+## Example Usage
+
+```python
+from gcmi import copnorm
+import numpy as np
+
+x1 = np.squeeze(copnorm(X[:, 0][None, :]))
+x2 = np.squeeze(copnorm(X[:, 1][None, :]))
+t  = np.squeeze(copnorm(Y[None, :]))
+
+xyz = np.column_stack([x1, x2, t])
+
+Cxyz = (xyz.T @ xyz) / (xyz.shape[0] - 1)
+np.fill_diagonal(Cxyz, 1.0)
+
+result = pid_estimator.predict_from_covariance(
+    Cxyz,
+    n_samples=xyz.shape[0]
+)
+
+atoms = result["atoms"]
+null_mu = result["null_mu"]
+null_sigma = result["null_sigma"]
+p_values = result["p_values"]
+significant_atoms = result["significant_atoms"]
+```
+
+---
+
+## Dependencies
+
+- [GCMI](https://github.com/robince/gcmi)
+- NumPy
+- SciPy
+- torch
+
+Install with:
+
+```bash
+pip install numpy scipy
+```
+
+and install GCMI from:
+
+```bash
+git clone https://github.com/robince/gcmi.git
+```
+
+---
+
+## References
+
+Ince, R. A. A. (2017). *Measuring multivariate redundant information with pointwise common change in surprisal*. Entropy, 19(7), 318.
+
+Ince, R. A. A., Giordano, B. L., Kayser, C., Rousselet, G. A., Gross, J., & Schyns, P. G. (2017). *A statistical framework for neuroimaging data analysis based on mutual information estimated via a Gaussian copula*. Human Brain Mapping, 38(3), 1541-1573.
+
+O’Reilly, D., Shaw, W., Hilt, P., de Castro Aguiar, R., Astill, SL., Delis, I. *Quantifying the diverse contributions of hierarchical muscle interactions to motor function*. Iscience. 2025 Jan 17;28(1).
