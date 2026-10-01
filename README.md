@@ -91,7 +91,7 @@ significant_atoms = result["significant_atoms"]
 Install with:
 
 ```bash
-pip install numpy scipy
+pip install numpy scipy torch
 ```
 
 and install GCMI from:
