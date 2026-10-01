@@ -1,0 +1,21 @@
+{
+    "input_features": [
+        "r_source1_source2",
+        "r_source1_target",
+        "r_source2_target",
+        "inv_sqrt_N"
+    ],
+    "outputs": [
+        "redundancy",
+        "unique_source1",
+        "unique_source2",
+        "synergy"
+    ],
+    "null_heads": [
+        "null_mean",
+        "null_std"
+    ],
+    "input_dimension": 4,
+    "output_dimension": 4,
+    "precision": "float64"
+}
