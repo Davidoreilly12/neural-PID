@@ -1,10 +1,10 @@
 # Neural PID
 
-Neural amortisation of Partial Information Decomposition (PID) for rapid estimation of redundant, unique, and synergistic information directly from the joint covariance matrix. 
+Neural amortisation of Partial Information Decomposition (PID) for rapid estimation of redundant, unique, and synergistic information between pairs of sources about a target variable.
 
 ## Overview
 
-This repository provides a neural estimator trained on simulated data of varying signal and noise correlations (r = -0.99 - 0.99) and sample sizes (N = 10 - 1000000) for PID that predicts:
+This repository provides a neural estimator trained on simulated data of varying signal and noise correlations (r = -0.99 - 0.99) and sample sizes (N = 10 - 1000000) (see Fig.2 of Ref.3) for PID that predicts:
 
 - Redundancy (R)
 - Unique Information 1 (UY)
@@ -104,8 +104,8 @@ git clone https://github.com/robince/gcmi.git
 
 ## References
 
-Ince, R. A. A. (2017). *Measuring multivariate redundant information with pointwise common change in surprisal*. Entropy, 19(7), 318.
+1. Ince, R. A. A. (2017). *Measuring multivariate redundant information with pointwise common change in surprisal*. Entropy, 19(7), 318.
 
-Ince, R. A. A., Giordano, B. L., Kayser, C., Rousselet, G. A., Gross, J., & Schyns, P. G. (2017). *A statistical framework for neuroimaging data analysis based on mutual information estimated via a Gaussian copula*. Human Brain Mapping, 38(3), 1541-1573.
+2. Ince, R. A. A., Giordano, B. L., Kayser, C., Rousselet, G. A., Gross, J., & Schyns, P. G. (2017). *A statistical framework for neuroimaging data analysis based on mutual information estimated via a Gaussian copula*. Human Brain Mapping, 38(3), 1541-1573.
 
-O’Reilly, D., Shaw, W., Hilt, P., de Castro Aguiar, R., Astill, SL., Delis, I. *Quantifying the diverse contributions of hierarchical muscle interactions to motor function*. Iscience. 2025 Jan 17;28(1).
+3. O’Reilly, D., Shaw, W., Hilt, P., de Castro Aguiar, R., Astill, SL., Delis, I. *Quantifying the diverse contributions of hierarchical muscle interactions to motor function*. Iscience. 2025 Jan 17;28(1).
