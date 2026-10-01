@@ -2,7 +2,7 @@
 Neural Amortisation of an approach to Partial Information Decomposition
 
 
-Package dependencies:
+Package dependencies: \
 https://github.com/robince/gcmi \
 scipy \
 numpy
