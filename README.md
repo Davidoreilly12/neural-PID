@@ -4,7 +4,7 @@ Neural amortisation of Partial Information Decomposition (PID) for rapid estimat
 
 ## Overview
 
-This repository provides a neural estimator trained on simulated data of varying signal and noise correlations (r = -0.99 - 0.99) and sample sizes (N = 10 - 1000000) (see Fig.2 of Ref.3) for PID that predicts:
+This repository provides a neural estimator of PID based on Gaussian Copula Mutual Information trained on synthetic data of varying signal and noise correlations (r = -0.99 - 0.99) and sample sizes (N = 10 - 1000000) (see Fig.2 of Ref.3) that predicts:
 
 - Redundancy (R)
 - Unique Information 1 (UY)
