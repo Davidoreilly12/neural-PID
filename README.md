@@ -65,7 +65,6 @@ t  = np.squeeze(copnorm(Y[None, :]))
 xyz = np.column_stack([x1, x2, t])
 
 Cxyz = (xyz.T @ xyz) / (xyz.shape[0] - 1)
-np.fill_diagonal(Cxyz, 1.0)
 
 result = pid_estimator.predict_from_covariance(
     Cxyz,
