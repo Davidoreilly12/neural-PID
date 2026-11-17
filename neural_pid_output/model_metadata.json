@@ -1,21 +1,18 @@
 {
-    "input_features": [
-        "r_source1_source2",
-        "r_source1_target",
-        "r_source2_target",
-        "inv_sqrt_N"
-    ],
-    "outputs": [
-        "redundancy",
-        "unique_source1",
-        "unique_source2",
-        "synergy"
-    ],
-    "null_heads": [
-        "null_mean",
-        "null_std"
-    ],
-    "input_dimension": 4,
-    "output_dimension": 4,
-    "precision": "float64"
+  "network_input": "pid_features(r12, r1t, r2t): [2*phi-1, sign-aligned r12, s, 2*R^2_multiple-1]",
+  "network_output": "rho = raw CCS redundancy / I(X1,X2;T)",
+  "atoms": [
+    "redundancy",
+    "unique_source1",
+    "unique_source2",
+    "synergy"
+  ],
+  "lattice": "Williams-Beer as pid_mvn.calc_pi_mvn; forcenn clips R, U1, U2 (not S)",
+  "binary_target": "0/1 indicator (no copula normalisation)",
+  "continuous_variables": "gcmi.copnorm (sources, and continuous targets)",
+  "null": "Monte Carlo permutation null of (r1t, r2t) given r12 and N, through the network",
+  "teacher_nmc": 200000,
+  "hidden_dim": 128,
+  "n_hidden_layers": 4,
+  "precision": "float64"
 }
