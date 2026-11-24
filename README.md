@@ -11,7 +11,7 @@ This repository provides a neural estimator of the Gaussian (copula) PID with CC
 - Unique Information 2 (U2)
 - Synergy (S)
 
-plus a permutation-based p-value for each atom and for the joint mutual information.
+plus a p-value for each atom, tested against a null under which that atom is zero, and a p-value for the joint mutual information.
 
 The network learns only the part of the PID that has no closed form: the **CCS redundancy**, a Monte Carlo integral (`Iccs_mvn` in [PyPID_mvn](https://github.com/AlessandroCorsini/PyPID_mvn)). Everything else is computed exactly from the correlation matrix (r₁₂ between the sources, r₁ₜ and r₂ₜ between each source and the target):
 
@@ -56,17 +56,25 @@ Copula-normalising a binary variable breaks its ties by sample order. That adds 
 
 ## Significance Testing
 
-Under a permutation of the target, the source–target correlations (r₁ₜ, r₂ₜ) are approximately jointly normal on the Fisher-z scale, with variance 1/(N − 3) and correlation r₁₂ between them. So the null depends only on r₁₂ and N.
+Each atom is tested against a null hypothesis under which **that atom** is zero. A single "target unrelated to both sources" null is not enough, because of a property of CCS redundancy. A source that is truly unrelated to the target still has a sample correlation of about ±1/√N with it. Its mutual information grows with the square of that correlation, but CCS redundancy grows roughly in proportion to the correlation itself. So when one source is informative and the other is not, the measured R is well above what the global null produces. Under the global null, R was declared significant in 30–73% of such datasets (see Null Calibration).
 
-For each input, the estimator:
+| Atom | Null hypothesis | Null correlations |
+|--------|--------|--------|
+| R | Either source has zero correlation with T (CCS R = 0 exactly in that case). p = the larger of the two p-values. | Parametric bootstrap: sample correlation matrices of N Gaussian samples (Wishart) from the observed matrix with that source's correlation to T set to 0 |
+| U1 | T independent of X1 given X2 | Exact, conditional on the data: r₁ₜ = r₁₂r₂ₜ + √(1−r₁₂²)√(1−r₂ₜ²)·g, with g the partial correlation, g² ~ Beta(½, (N−3)/2), random sign |
+| U2 | T independent of X2 given X1 | As for U1, with the sources swapped |
+| S | Either source adds nothing given the other. p = the larger of the U1 and U2 null p-values for S. | As for U1 and U2 |
+| I(X1,X2;T) | T unrelated to both sources | Fisher-z draws of (r₁ₜ, r₂ₜ) with variance 1/(N − 3) and correlation r₁₂ |
 
-1. Draws `n_null` (default 1,000) null correlation pairs.
-2. Passes them through the same network.
-3. Returns empirical p-values: \(p = (1 + \#\{\text{null} \ge \text{observed}\}) / (n_{\text{null}} + 1)\).
+A conditional-independence null would be wrong for R. When X2 is a noisy copy of X1, X2 carries genuinely redundant information, yet T is independent of X2 given X1.
 
-There is no Gaussian assumption about the null, which is strongly skewed for non-negative atoms.
+For each input, the estimator draws `n_null` (default 1,000) null correlation matrices for each hypothesis and passes them through the same network. It returns empirical p-values: \(p = (1 + \#\{\text{null} \ge \text{observed}\}) / (n_{\text{null}} + 1)\). There is no Gaussian assumption about the null, which is strongly skewed for non-negative atoms.
+
+`null="global"` gives the previous behaviour: every atom is tested against "T unrelated to both sources".
 
 `n_samples` should be the **effective** number of independent samples. For autocorrelated data (time series, sleep epochs) the raw sample count gives p-values that are too small.
+
+The tests concern significance only. The atom values themselves are plug-in estimates from the sample correlation matrix, so they are biased upward at small N, R most of all. This is the same as for an exact PID of the same matrix. Atoms that fail their test are set to 0 in `significant_atoms`.
 
 ---
 
@@ -124,7 +132,24 @@ The training teacher matches `pid_mvn.calc_pi_mvn` (mean of 3 runs, 10 random ma
 
 ### Null Calibration
 
-False-positive rate at α = 0.05 with an independent target. 300 simulated datasets per condition, 27 conditions: N ∈ {30, 300, 3000} × r₁₂ ∈ {0, 0.5, 0.9} × target ∈ {Gaussian, binary p = 0.5, binary p = 0.1}.
+**Atom-specific nulls (default).** Fraction of datasets with p < 0.05, from 300 simulated datasets per cell. Each range covers N ∈ {100, 1000} × target ∈ {continuous, binary p = 0.5}. The latent target is t = a·X1 + b·X2 + noise.
+
+| Scenario | Atom | True value | Atom null | Global null |
+|--------|--------|--------|--------|--------|
+| X1 informative, X2 independent | R | 0 | **0.02–0.05** | 0.30–0.73 |
+| | U2 | 0 | 0.01–0.06 | 0.00–0.02 |
+| | S | 0 | **0.04–0.08** | 0.29–0.46 |
+| | U1 | > 0 | 0.76–1.00 | 0.74–1.00 |
+| X2 a noisy copy of X1, T from X1 only | U2 | 0 | 0.01–0.05 | 0.01–0.07 |
+| | S | 0 | 0.02–0.05 | 0.05–0.09 |
+| | R | > 0 | 0.61–1.00 | 0.65–1.00 |
+| All independent | R, S | 0 | 0.00–0.01 | 0.03–0.07 |
+| | U1, U2 | 0 | 0.04–0.06 | 0.04–0.06 |
+| X1, X2 independent, T from both | U1, U2 | > 0 | 0.72–1.00 | 0.56–1.00 |
+
+The tests for R and S combine two p-values by taking the larger. They are therefore conservative when both of their null hypotheses hold (all independent).
+
+**Global null (`null="global"`).** False-positive rate at α = 0.05 with an independent target. 300 simulated datasets per condition, 27 conditions: N ∈ {30, 300, 3000} × r₁₂ ∈ {0, 0.5, 0.9} × target ∈ {Gaussian, binary p = 0.5, binary p = 0.1}.
 
 | | R | U1 | U2 | S | I(X1,X2;T) |
 |--------|--------|--------|--------|--------|--------|
@@ -141,9 +166,10 @@ Per source pair, on a 20-thread desktop CPU, NumPy inference:
 | Exact PID (`pid_mvn`-style, 100,000 MC samples) | 22.9 ms |
 | Neural PID, one `predict_from_covariance` call | 0.11 ms |
 | Neural PID, `predict_batch` | 18 µs |
-| Neural PID, `predict_batch` with a 1,000-draw null | 7.8 ms |
+| Neural PID, `predict_batch` with 1,000-draw global null | 7.8 ms |
+| Neural PID, `predict_batch` with 1,000-draw atom-specific nulls (default) | about 39 ms |
 
-The 1,000-draw null replaces an exact 1,000-permutation test, which would take about 23 s per pair.
+The atom-specific nulls take about 4× longer than the global null (39 vs 9.3 ms in the same run), because they draw four null ensembles. A 1,000-permutation exact test would take about 23 s per pair.
 
 ---
 
@@ -161,7 +187,7 @@ C = correlation_from_data(x1, x2, y, target="binary")
 result = pid_estimator.predict_from_covariance(C, n_samples=len(y))
 
 atoms = result["atoms"]                          # [R, U1, U2, S] in bits
-p_values = result["p_values"]                    # permutation-null p-value per atom
+p_values = result["p_values"]                    # p-value per atom (atom-specific null)
 significant_atoms = result["significant_atoms"]  # atoms with p >= 0.05 set to 0
 jmi = result["jmi"]                              # I(X1,X2;T), exact
 null_mu, null_sigma = result["null_mu"], result["null_sigma"]
@@ -179,14 +205,15 @@ Also returned:
 - `mi_source1`, `mi_source2`: I(X1;T) and I(X2;T).
 - `p_jmi`: p-value for the joint mutual information.
 
-Pass `n_null=0` to skip significance testing. See `example.py` for a runnable script.
+For R and S, `null_mu` and `null_sigma` describe the null that gave the larger p-value. Pass `null="global"` for the single "target unrelated to both sources" null, and `n_null=0` to skip significance testing. See `example.py` for a runnable script.
 
 ---
 
 ## Changes from the Previous Model
 
 - **Near-zero floor removed.** The previous network output all four atoms directly through a softplus. It could not reach zero, which left a positive floor of about 0.002 bits on redundancy and synergy for weak targets. Atoms are now built from the exact mutual-information terms and are exactly zero when there is no information.
-- **Null heads replaced.** The previous Gaussian null-mean and null-SD heads collapsed during training to a constant mean and near-zero SD, so the p-values were unusable. They are replaced by the Monte Carlo permutation null above.
+- **Null heads replaced.** The previous Gaussian null-mean and null-SD heads collapsed during training to a constant mean and near-zero SD, so the p-values were unusable. They are replaced by Monte Carlo nulls passed through the same network.
+- **Atom-specific nulls.** Each atom is now tested against a null under which it is zero (see Significance Testing). Under the global null, redundancy and synergy were often called significant when only one source was informative. The network is unchanged.
 - **Binary target no longer copula-normalised** (see Preprocessing).
 - **`1/√N` no longer a network input.** The PID of a correlation matrix does not depend on N; N enters only through the null.
 - **Teacher clipping bias removed.** The teacher now stores redundancy before `forcenn` clipping, which removes an upward bias for weak, noisy targets.
@@ -213,7 +240,8 @@ Pass `n_null=0` to skip significance testing. See `example.py` for a runnable sc
 
 - Two scalar sources and a scalar target (`varsizes = [1, 1, 1]`). Multivariate sources need the exact `pid_mvn` estimator.
 - Gaussian (copula) PID: dependence beyond what the copula correlation captures is not measured, and binary targets are approximated as Gaussian.
-- The permutation null assumes exchangeable samples. Use an effective sample size for autocorrelated data.
+- The nulls assume exchangeable samples. Use an effective sample size for autocorrelated data. The nulls for U1, U2, S and R are exact or parametric for Gaussian data, and approximate for binary targets.
+- Atom values are plug-in estimates and are biased upward at small N. No bias correction is applied.
 
 ---
 

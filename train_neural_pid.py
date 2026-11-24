@@ -138,6 +138,42 @@ def iccs_redundancy(r12, r1t, r2t, nmc, rng):
     return lnii.mean() / LN2, lnii.std(ddof=1) / math.sqrt(nmc) / LN2
 
 
+def wishart_corr(Sigma0, n_samples, n_draws, rng):
+    """Sample correlation matrices of N Gaussian samples drawn from Sigma0 (Bartlett
+    decomposition of Wishart(N-1, Sigma0)). Sigma0 (k,d,d), n_samples (k,) -> (k,n_draws,d,d)."""
+    Sigma0 = np.asarray(Sigma0, dtype=np.float64)
+    k, d, _ = Sigma0.shape
+    df = np.maximum(np.asarray(n_samples, dtype=np.float64).reshape(k), d + 1.0) - 1.0
+    L = np.linalg.cholesky(Sigma0)
+    A = np.zeros((k, n_draws, d, d))
+    il = np.tril_indices(d, -1)
+    A[:, :, il[0], il[1]] = rng.standard_normal((k, n_draws, len(il[0])))
+    dof = np.broadcast_to(df[:, None, None] - np.arange(d)[None, None, :], (k, n_draws, d))
+    A[:, :, np.arange(d), np.arange(d)] = np.sqrt(rng.chisquare(dof))
+    LA = np.einsum("kij,knjl->knil", L, A)
+    W = LA @ np.swapaxes(LA, -1, -2)
+    s = np.sqrt(np.einsum("...ii->...i", W))
+    return W / (s[..., :, None] * s[..., None, :])
+
+
+def atom_pvalues(obs, null_m1, null_m2, null_c1, null_c2, n_null):
+    """Atom-specific p-values from four null ensembles of atoms (k, n_null, 4):
+    m1/m2: source 1/2 has no marginal relation to T (R = 0 under either -> p_R = max);
+    c1/c2: T independent of source 1/2 given the other (U1 from c1, U2 from c2,
+    S needs both sources to add information -> p_S = max).
+    Returns p (k,4) and the mean/SD of the null that gave each p."""
+    def pv(null, o):
+        return (1 + np.sum(null >= o[:, None] - 1e-15, axis=1)) / (n_null + 1)
+    pr1, pr2 = pv(null_m1[..., 0], obs[:, 0]), pv(null_m2[..., 0], obs[:, 0])
+    ps1, ps2 = pv(null_c1[..., 3], obs[:, 3]), pv(null_c2[..., 3], obs[:, 3])
+    p = np.column_stack([np.maximum(pr1, pr2), pv(null_c1[..., 1], obs[:, 1]),
+                         pv(null_c2[..., 2], obs[:, 2]), np.maximum(ps1, ps2)])
+    nR = np.where((pr1 >= pr2)[:, None], null_m1[..., 0], null_m2[..., 0])
+    nS = np.where((ps1 >= ps2)[:, None], null_c1[..., 3], null_c2[..., 3])
+    nulls = np.stack([nR, null_c1[..., 1], null_c2[..., 2], nS], axis=-1)
+    return p, nulls.mean(1), nulls.std(1)
+
+
 def assemble_atoms(R_raw, I1, I2, JMI, forcenn=True):
     """Williams-Beer lattice exactly as calc_pi_mvn: R, U1, U2 clipped at 0 if forcenn, S never."""
     R = np.maximum(R_raw, 0.0) if forcenn else R_raw
@@ -481,7 +517,47 @@ class NeuralPIDEstimator:
             a, b = np.where(bad, 0.9 * a, a), np.where(bad, 0.9 * b, b)
         return rr, a, b
 
-    def predict_batch(self, Cs, n_samples, forcenn=True, n_null=None, p_value_thresh=None, max_rows=2_000_000):
+    def marginal_null(self, r12, r1t, r2t, zero, n_samples, n_null):
+        """H0: source `zero` (1 or 2) is uncorrelated with T, with r12 and the other source's
+        correlation with T at their observed values (the latter shrunk only if needed to
+        keep the matrix positive definite). Parametric bootstrap from Wishart(N-1, Sigma0)."""
+        keep = r1t if zero == 2 else r2t
+        lim = np.sqrt(np.maximum(0.999 - r12 ** 2, 0.0))
+        keep = np.clip(keep, -lim, lim)
+        k = len(r12)
+        S = np.zeros((k, 3, 3))
+        S[:, np.arange(3), np.arange(3)] = 1.0
+        S[:, 0, 1] = S[:, 1, 0] = r12
+        j = 0 if zero == 2 else 1
+        S[:, j, 2] = S[:, 2, j] = keep
+        W = wishart_corr(S, n_samples, n_null, self.rng)
+        return W[..., 0, 1], W[..., 0, 2], W[..., 1, 2]
+
+    def conditional_null(self, r12, r1t, r2t, test, n_samples, n_null):
+        """H0: T is independent of source `test` (1 or 2) given the other source. Exact for
+        Gaussian data conditional on the observed sources and the other source's relation
+        to T: r_test,t = r12 r_other,t + sqrt(1-r12^2) sqrt(1-r_other,t^2) g, with g the
+        partial correlation, g^2 ~ Beta(1/2, (N-3)/2) and a random sign."""
+        other = r1t if test == 2 else r2t
+        k = len(r12)
+        n = np.maximum(np.asarray(n_samples, dtype=np.float64).reshape(-1, 1), 4.0)
+        g = np.sqrt(self.rng.beta(0.5, (n - 3.0) / 2.0, size=(k, n_null)))
+        g *= self.rng.choice([-1.0, 1.0], size=(k, n_null))
+        new = (r12 * other)[:, None] + (np.sqrt(np.maximum(1 - r12 ** 2, 0)) * np.sqrt(np.maximum(1 - other ** 2, 0)))[:, None] * g
+        rr = np.broadcast_to(r12[:, None], new.shape)
+        ob = np.broadcast_to(other[:, None], new.shape)
+        return (rr, ob, new) if test == 2 else (rr, new, ob)
+
+    def predict_batch(self, Cs, n_samples, forcenn=True, n_null=None, p_value_thresh=None,
+                      null="atom", max_rows=1_000_000):
+        """Cs: (k, 3, 3) covariance/correlation matrices ordered [x1, x2, target].
+        n_samples: scalar or (k,) effective sample sizes (only used for the null).
+        null="atom" (default): each atom is tested against a null under which it is 0
+          (R: either source unrelated to T; U1/U2: T independent of that source given the
+          other; S: either source adds nothing given the other). JMI: global null.
+        null="global": every atom against "T unrelated to both sources"."""
+        if null not in ("atom", "global"):
+            raise ValueError("null must be 'atom' or 'global'")
         Cs = np.asarray(Cs, dtype=np.float64).reshape(-1, 3, 3)
         d = np.sqrt(np.einsum("kii->ki", Cs))
         R = Cs / (d[:, :, None] * d[:, None, :])
@@ -497,15 +573,23 @@ class NeuralPIDEstimator:
             n_samples = np.broadcast_to(np.asarray(n_samples, dtype=np.float64), (k,))
             p = np.empty((k, 4)); p_jmi = np.empty(k)
             mu = np.empty((k, 4)); sd = np.empty((k, 4))
-            step = max(1, max_rows // n_null)
+            step = max(1, max_rows // (n_null * (4 if null == "atom" else 1)))
             for i in range(0, k, step):
                 sl = slice(i, min(k, i + step))
-                rr, a, b = self.null_correlations(r12[sl], n_samples[sl], n_null)
-                null_atoms, _, _, _, null_jmi = self.atoms_from_correlations(rr, a, b, forcenn)
-                obs = atoms[sl][:, None, :]
-                p[sl] = (1 + np.sum(null_atoms >= obs - 1e-15, axis=1)) / (n_null + 1)
+                ns = n_samples[sl]
+                rr, a, b = self.null_correlations(r12[sl], ns, n_null)     # global null (JMI)
+                null_jmi = closed_form_mi(rr, a, b)[2]
                 p_jmi[sl] = (1 + np.sum(null_jmi >= JMI[sl][:, None] - 1e-15, axis=1)) / (n_null + 1)
-                mu[sl], sd[sl] = null_atoms.mean(1), null_atoms.std(1)
+                if null == "global":
+                    null_atoms = self.atoms_from_correlations(rr, a, b, forcenn)[0]
+                    p[sl] = (1 + np.sum(null_atoms >= atoms[sl][:, None, :] - 1e-15, axis=1)) / (n_null + 1)
+                    mu[sl], sd[sl] = null_atoms.mean(1), null_atoms.std(1)
+                else:
+                    c = (r12[sl], r1t[sl], r2t[sl])
+                    ens = [self.marginal_null(*c, 1, ns, n_null), self.marginal_null(*c, 2, ns, n_null),
+                           self.conditional_null(*c, 1, ns, n_null), self.conditional_null(*c, 2, ns, n_null)]
+                    ens = [self.atoms_from_correlations(*e, forcenn)[0] for e in ens]
+                    p[sl], mu[sl], sd[sl] = atom_pvalues(atoms[sl], *ens, n_null)
             out.update(null_mu=mu, null_sigma=sd, p_values=p, p_jmi=p_jmi,
                        significant_atoms=np.where(p < thr, atoms, 0.0))
         return out
