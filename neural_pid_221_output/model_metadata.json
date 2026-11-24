@@ -1,0 +1,25 @@
+{
+  "varsizes": [
+    2,
+    2,
+    1
+  ],
+  "network_input": "pid_features(canonical): [2*phi-1, s, 2*R^2-1, B00, B01, B10, B11, sv1, sv2]",
+  "canonical": "each source whitened and rotated so its target vector is (rho_k, 0); B = whitened cross block",
+  "network_output": "rho = raw CCS redundancy / I(X1,X2;T)",
+  "teacher": "Iccs_mvn with full covariance blocks (np.ix_ fix), varsizes [2,2,1]",
+  "atoms": [
+    "redundancy",
+    "unique_source1",
+    "unique_source2",
+    "synergy"
+  ],
+  "lattice": "Williams-Beer as pid_mvn.calc_pi_mvn; forcenn clips R, U1, U2 (not S)",
+  "binary_target": "0/1 indicator (no copula normalisation)",
+  "continuous_variables": "gcmi.copnorm (every source variable, and continuous targets)",
+  "null": "permutation null: uniformly oriented whitened cross-correlations, R^2 ~ Beta(2, (N-5)/2)",
+  "teacher_nmc": 200000,
+  "hidden_dim": 128,
+  "n_hidden_layers": 4,
+  "precision": "float64"
+}

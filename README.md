@@ -2,6 +2,15 @@
 
 Neural amortisation of Partial Information Decomposition (PID) for rapid estimation of redundant, unique, and synergistic information between pairs of sources about a target variable.
 
+Two models are included:
+
+| Model | Sources and target | `pid_mvn` varsizes | Module |
+|--------|--------|--------|--------|
+| Neural PID | two scalar sources, scalar target (3 × 3 matrix) | `[1, 1, 1]` | `neural_pid.py` |
+| Neural PID [2,2,1] | two 2-variable sources, scalar target (5 × 5 matrix) | `[2, 2, 1]` | `neural_pid_221.py` (see [Multivariate Sources](#multivariate-sources-neural-pid-221)) |
+
+The sections up to Example Usage describe the `[1, 1, 1]` model. The `[2, 2, 1]` model follows the same design.
+
 ## Overview
 
 This repository provides a neural estimator of the Gaussian (copula) PID with CCS redundancy (Ref. 1). It takes the 3 × 3 correlation matrix of two sources and a target and returns:
@@ -209,6 +218,126 @@ For R and S, `null_mu` and `null_sigma` describe the null that gave the larger p
 
 ---
 
+## Multivariate Sources: Neural PID [2,2,1]
+
+`neural_pid_221.py` amortises the same Gaussian CCS PID for **two sources of two variables each** and a scalar target. This is `pid_mvn` with `varsizes = [2, 2, 1]`; an example is a gene's expression and accessibility as one source. The design is the same as the `[1, 1, 1]` model:
+- The network predicts only the CCS redundancy, as a fraction of the joint mutual information.
+- I(X1;T), I(X2;T) and I(X1,X2;T) are exact closed forms.
+- The atoms come from the Williams–Beer lattice. They are in bits and sum exactly to I(X1,X2;T).
+
+### Indexing bug in the Python `Iccs_mvn` for multivariate sources
+
+The Python port of `Iccs_mvn` fills covariance blocks with `Cfull[idx, idx]`. With two index arrays, NumPy pairs the indices element by element and returns only the **diagonal** of the block. MATLAB's `Cfull(idx, idx)` returns the whole block.
+
+For multivariate sources, this drops the within-source covariance from I(X1;T), I(X2;T) and the redundancy terms, along with some cross-source terms. On random 5 × 5 matrices the atoms were wrong by up to ~0.3 bits, and some matrices failed with "not positive definite". For `[1, 1, 1]`, every index array has length 1, so the bug has no effect there.
+
+`iccs_mvn_fixed.py` is the port with every block filled using `np.ix_`. The `[2, 2, 1]` network is trained on this corrected version. Any earlier `[2, 2, 1]` results from the unfixed port should be recomputed.
+
+### Canonical input
+
+CCS redundancy is exactly invariant to any invertible linear map within a source (checked to 1e-16). So each source is whitened, then rotated so that its correlation vector with T becomes (ρₖ, 0). A 5 × 5 matrix then reduces to 6 numbers:
+- ρ1 and ρ2: each source's canonical correlation with T;
+- the 2 × 2 whitened cross-source block B, with signs fixed so that B₁₀ ≥ 0 and B₀₁ ≥ 0.
+
+The closed forms are I(Xₖ;T) = −½log₂(1 − ρₖ²) and I(X1,X2;T) = −½log₂(1 − R²), where R² is the squared multiple correlation of T on all four source variables.
+
+The network inputs are the direction of (ρ1, ρ2), the strength √(ρ1² + ρ2²), 2R² − 1, the entries of B and its singular values. The network output is averaged over the source swap, so swapping the sources swaps U1 and U2 exactly. All atoms are exactly 0 for an unrelated target, and R is exactly 0 when either source is unrelated.
+
+### Preprocessing and significance
+
+Preprocessing is the same as for `[1, 1, 1]`: `gcmi.copnorm` on each source variable, a binary target as a 0/1 indicator, and `copnorm` on a continuous target.
+
+The atom-specific nulls are also the same, extended to two-variable sources. For U1, U2 and S, the tested source's whitened target-correlation vector is B′a + L·g·√(1 − |a|²), where a is the other source's whitened target-correlation vector and L is the Cholesky factor of the tested source's residual covariance given the other source. The partial-correlation vector g has a uniform direction and |g|² ~ Beta(1, (N − 5)/2). The global null uses a uniformly oriented whitened cross-correlation vector with R² ~ Beta(2, (N − 5)/2).
+
+### Training
+
+- **Teacher:** the corrected `Iccs_mvn` with 200,000 Monte Carlo samples. It matches `iccs_mvn_fixed.py` to within 1e-14 bits on identical random draws.
+- **Data:** 100,000 / 10,000 / 10,000 matrices (train / validation / test):
+  - 30% random matrices: half from partial correlations drawn uniformly in (−0.99, 0.99) (C-vine), so every correlation reaches ±0.99, and half A·Aᵀ;
+  - 50% weak targets, with strength log-uniform from 10⁻³ and cross-block singular values often near 1;
+  - 20% computed from simulated data with N = 20 to 20,000, from three generators:
+    - a four-channel version of the EMG simulator of Ref. 3, with signal correlations uniform in (−0.99, 0.99) and C-vine noise correlations;
+    - Gaussian data with binary targets at 1–50% prevalence;
+    - Gaussian data with continuous targets.
+- **Network:** 4 × 128 GELU MLP, float64.
+- **Loss:** weighted MSE on ρ, with weights 1 / (teacher SE² + 0.05²).
+- **Optimiser:** AdamW, cosine schedule, 300 epochs.
+
+`train_neural_pid_221.py` reproduces the model.
+
+### Test performance
+
+Mean absolute error (bits) on the 10,000 held-out matrices, binned by the larger canonical source–target correlation:
+
+| max ρ | n | Mean I(X1,X2;T) | Teacher SE | R | U1 | U2 | S |
+|--------|------:|--------|--------|--------|--------|--------|--------|
+| (0, 0.01] | 2,080 | 2.57 × 10⁻³ | 2.54 × 10⁻⁶ | 2.97 × 10⁻⁶ | 1.38 × 10⁻⁶ | 1.45 × 10⁻⁶ | 1.72 × 10⁻⁶ |
+| (0.01, 0.05] | 1,944 | 3.56 × 10⁻² | 2.12 × 10⁻⁵ | 3.28 × 10⁻⁵ | 1.89 × 10⁻⁵ | 1.86 × 10⁻⁵ | 1.83 × 10⁻⁵ |
+| (0.05, 0.1] | 972 | 4.13 × 10⁻² | 6.77 × 10⁻⁵ | 6.81 × 10⁻⁵ | 5.69 × 10⁻⁵ | 5.65 × 10⁻⁵ | 4.53 × 10⁻⁵ |
+| (0.1, 0.2] | 868 | 7.83 × 10⁻² | 1.41 × 10⁻⁴ | 1.54 × 10⁻⁴ | 1.31 × 10⁻⁴ | 1.31 × 10⁻⁴ | 1.08 × 10⁻⁴ |
+| (0.2, 0.3] | 549 | 1.49 × 10⁻¹ | 2.47 × 10⁻⁴ | 3.28 × 10⁻⁴ | 2.96 × 10⁻⁴ | 2.81 × 10⁻⁴ | 2.48 × 10⁻⁴ |
+| (0.3, 0.5] | 875 | 3.63 × 10⁻¹ | 3.89 × 10⁻⁴ | 6.17 × 10⁻⁴ | 5.43 × 10⁻⁴ | 5.32 × 10⁻⁴ | 4.58 × 10⁻⁴ |
+| (0.5, 1.0] | 2,712 | 1.54 | 9.75 × 10⁻⁴ | 5.12 × 10⁻³ | 4.58 × 10⁻³ | 4.61 × 10⁻³ | 4.07 × 10⁻³ |
+
+- **Up to ρ = 0.5**, the error is close to the teacher's own Monte Carlo noise.
+- **Strong targets (ρ > 0.5)** have the largest errors: about 0.3% of the joint mutual information on average, with a heavier tail. The RMSE of R beyond the teacher's noise is 0.019 bits.
+- **Weak targets** (max ρ ≤ 0.3, 139 matrices), raw redundancy against a 2-million-sample reference:
+  - one exact run with 100,000 samples: MAE 2.8 × 10⁻⁵ bits, median error 0.9% of I(X1,X2;T);
+  - the network: MAE 6.7 × 10⁻⁵ bits, median error 0.5% of I(X1,X2;T).
+- **Corrected `pid_mvn` cross-check** (mean of 3 runs, 10 random matrices): the largest difference is 2.6 × 10⁻³ bits. The run-to-run SD of `pid_mvn` itself is up to 1.3 × 10⁻³ bits.
+- **Invariance:** atoms change by at most 6 × 10⁻¹³ bits under random invertible linear maps within each source.
+
+### Null calibration
+
+Fraction of datasets with p < 0.05, from 300 simulated datasets per cell. Each range covers N ∈ {100, 1000} × target ∈ {continuous, binary p = 0.5}. Each source has 2 variables.
+
+| Scenario | Atom | True value | Atom null | Global null |
+|--------|--------|--------|--------|--------|
+| X1 informative, X2 independent | R | 0 | **0.01–0.03** | 0.29–0.93 |
+| | U2 | 0 | 0.01–0.06 | 0.00–0.03 |
+| | S | 0 | **0.03–0.05** | 0.30–0.52 |
+| | U1 | > 0 | 0.67–1.00 | 0.65–1.00 |
+| X2 a noisy copy of X1, T from X1 only | U2 | 0 | 0.04–0.05 | 0.01–0.10 |
+| | S | 0 | 0.03–0.05 | 0.04–0.10 |
+| | R | > 0 | 0.60–1.00 | 0.62–1.00 |
+| All independent | R, S | 0 | 0.00–0.01 | 0.02–0.07 |
+| | U1, U2 | 0 | 0.04–0.06 | 0.04–0.06 |
+| X1, X2 independent, T from both | U1, U2 | > 0 | 0.59–1.00 | 0.43–1.00 |
+
+I also tested the global null alone, with independent targets: 27 conditions (N ∈ {30, 300, 3000}; independent, within-source-correlated and mixed sources; Gaussian and binary targets). The mean false-positive rates were 0.045 for R, 0.052 for U1, 0.051 for U2, 0.049 for S and 0.050 for I(X1,X2;T), all within 0.017–0.093. Full results are in `neural_pid_221_output/evaluation.json`.
+
+### Speed
+
+Per source pair, on a 20-thread desktop CPU, with NumPy inference:
+
+| Method | Time |
+|--------|--------|
+| Exact PID (corrected `pid_mvn`, 100,000 MC samples) | 245 ms |
+| Neural PID [2,2,1], one `predict_from_covariance` call | 0.23 ms |
+| Neural PID [2,2,1], `predict_batch` | 12 µs |
+| Neural PID [2,2,1], `predict_batch` with 1,000-draw global null | 9.7 ms |
+| Neural PID [2,2,1], `predict_batch` with 1,000-draw atom-specific nulls (default) | 51 ms |
+
+### Usage
+
+```python
+from neural_pid_221 import NeuralPID221Estimator, correlation_from_data
+
+est = NeuralPID221Estimator.load("neural_pid_221_output", n_null=1000)
+
+# X1, X2: (N, 2) arrays (two variables per source); y binary or continuous
+C = correlation_from_data(X1, X2, y, target="binary")     # 5 x 5, order [x1a, x1b, x2a, x2b, target]
+res = est.predict_from_covariance(C, n_samples=len(y))
+res["atoms"], res["p_values"], res["jmi"]
+
+# Many pairs: stack (k, 5, 5) covariance or correlation matrices
+res = est.predict_batch(Cs, n_samples=n_eff)
+```
+
+Any 5 × 5 covariance ordered `[x1a, x1b, x2a, x2b, target]` works directly, with no need to standardise it first. `res["canonical"]` returns the 6 canonical parameters. See `example_221.py` for a runnable script.
+
+---
+
 ## Changes from the Previous Model
 
 - **Near-zero floor removed.** The previous network output all four atoms directly through a softplus. It could not reach zero, which left a positive floor of about 0.002 bits on redundancy and synergy for weak targets. Atoms are now built from the exact mutual-information terms and are exactly zero when there is no information.
@@ -233,12 +362,19 @@ For R and S, `null_mu` and `null_sigma` describe the null that gave the larger p
 | `neural_pid_output/evaluation.json` | All test results above |
 | `neural_pid_output/training_history.npy` | Train / validation loss per epoch |
 | `neural_pid_output/{train,validation,test}.npz` | Training data: r₁₂, r₁ₜ, r₂ₜ, teacher redundancy, its MC SE, I(X1;T), I(X2;T), I(X1,X2;T), generator |
+| `neural_pid_221.py` | `[2, 2, 1]` inference: `NeuralPID221Estimator`, `correlation_from_data` (NumPy/SciPy only) |
+| `example_221.py` | Runnable `[2, 2, 1]` examples |
+| `train_neural_pid_221.py` | `[2, 2, 1]` data generation, training and evaluation |
+| `iccs_mvn_fixed.py` | `pid_mvn` port with the multivariate indexing fix (the `[2, 2, 1]` teacher's reference) |
+| `neural_pid_221_output/redundancy_net_221.npz` | `[2, 2, 1]` weights (NumPy); `redundancy_net_221.pt` is the same weights for PyTorch |
+| `neural_pid_221_output/model_metadata.json`, `evaluation.json`, `training_history.npy` | `[2, 2, 1]` model description, test results, loss history |
+| `neural_pid_221_output/{train,validation,test}.npz` | `[2, 2, 1]` training data: ρ1, ρ2, B₀₀, B₀₁, B₁₀, B₁₁, teacher redundancy, its MC SE, I(X1;T), I(X2;T), I(X1,X2;T), generator |
 
 ---
 
 ## Limitations
 
-- Two scalar sources and a scalar target (`varsizes = [1, 1, 1]`). Multivariate sources need the exact `pid_mvn` estimator.
+- Two sources and a scalar target only, with source sizes of either `[1, 1, 1]` or `[2, 2, 1]`. Other sizes need the exact estimator (`iccs_mvn_fixed.py` for multivariate sources).
 - Gaussian (copula) PID: dependence beyond what the copula correlation captures is not measured, and binary targets are approximated as Gaussian.
 - The nulls assume exchangeable samples. Use an effective sample size for autocorrelated data. The nulls for U1, U2, S and R are exact or parametric for Gaussian data, and approximate for binary targets.
 - Atom values are plug-in estimates and are biased upward at small N. No bias correction is applied.
